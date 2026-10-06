@@ -27,8 +27,10 @@ import java.io.IOException
  * HttpOnly `__atlas_rt` refresh cookie is captured and re-presented so the SDK
  * can call `me` and rotate the token without the app ever handling it.
  *
- * The client is intentionally thin. It does not drive multi-step MFA UI, own a
- * cookie jar, or bundle passkeys — see the README's scope note.
+ * The direct happy-path methods below ([signIn], [currentUser], [refresh],
+ * [signOut]) cover the common case; the multi-step [signInFlow] / [signUpFlow] /
+ * [passwordResetFlow] drivers handle email/phone codes, second factors and MFA
+ * enrollment, and the organizations / sessions / `/me` surfaces live alongside.
  *
  * All network methods are `suspend` functions; call them from a coroutine.
  *
@@ -58,7 +60,7 @@ class AtlasClient(
     // CookieJar.NO_COOKIES, so an injected/default client is already cookie-less.
     private val http: OkHttpClient = httpClient ?: OkHttpClient()
 
-    private val json: Json = Json {
+    internal val json: Json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
         encodeDefaults = true
@@ -310,14 +312,37 @@ class AtlasClient(
     }
 
     /**
-     * The single place a request is built and sent. Every call flows through here
-     * so the auth header, base URL, and JSON content type are set in exactly one
-     * place — closing off the class of bug where one endpoint forgets the key.
+     * A string-map body convenience over [sendRaw] — encodes the map to JSON and
+     * sends it. The existing happy-path flows (password sign-in, ticket exchange,
+     * passkey) all have flat string bodies, so this keeps them unchanged.
      */
     private suspend fun send(
         method: String,
         path: String,
         body: Map<String, String>?,
+        cookie: String?,
+    ): RawResponse = sendRaw(
+        method = method,
+        path = path,
+        bodyJson = body?.let { json.encodeToString(stringMapSerializer, it) },
+        cookie = cookie,
+    )
+
+    /**
+     * The single place a request is built and sent. Every call flows through here
+     * so the auth header, base URL, and JSON content type are set in exactly one
+     * place — closing off the class of bug where one endpoint forgets the key.
+     *
+     * [bodyJson] is the already-encoded JSON body (or null). A richer body than a
+     * flat string map — nested objects, arrays, booleans, a PATCH of
+     * `unsafe_metadata` — is encoded by the caller and handed in here, so the
+     * multi-step flow driver and the `/me` mutation surface reuse this exact path
+     * rather than opening a second one.
+     */
+    private suspend fun sendRaw(
+        method: String,
+        path: String,
+        bodyJson: String?,
         cookie: String?,
     ): RawResponse = withContext(Dispatchers.IO) {
         val url = baseUrl.resolve(path)
@@ -331,9 +356,9 @@ class AtlasClient(
         }
 
         val requestBody: RequestBody? = when {
-            body != null -> {
+            bodyJson != null -> {
                 builder.header("content-type", "application/json")
-                json.encodeToString(stringMapSerializer, body).toRequestBody(jsonMediaType)
+                bodyJson.toRequestBody(jsonMediaType)
             }
             method != "GET" && method != "HEAD" -> ByteArray(0).toRequestBody(null)
             else -> null
@@ -354,6 +379,73 @@ class AtlasClient(
             )
         }
     }
+
+    /**
+     * The shared request path for the flow driver, native id_token sign-in, and
+     * the organizations / sessions / `/me` surfaces. Sends an arbitrary pre-encoded
+     * JSON [bodyJson] (or none), presents the stored session cookie when
+     * [authenticated], throws on a non-2xx, and hands back the raw body plus the
+     * `Set-Cookie` header(s) so a caller that completes into a session can capture
+     * the rotated refresh token.
+     *
+     * @throws AtlasException.NotSignedIn when [authenticated] is set but no session
+     *   is stored.
+     */
+    internal suspend fun requestRaw(
+        method: String,
+        path: String,
+        bodyJson: String?,
+        authenticated: Boolean,
+    ): AtlasResponse {
+        val cookie = if (authenticated) {
+            val stored = tokenStore.load() ?: throw AtlasException.NotSignedIn
+            cookieHeader(stored)
+        } else {
+            null
+        }
+        val response = sendRaw(method, path, bodyJson, cookie)
+        throwIfError(response)
+        return AtlasResponse(body = response.body, setCookies = response.setCookies)
+    }
+
+    /** The raw body + `Set-Cookie` header(s) of a successful request. */
+    internal data class AtlasResponse(val body: String, val setCookies: List<String>)
+
+    /** Decode a body with the SDK's tolerant JSON, mapping failures to [AtlasException.Decoding]. */
+    internal fun <T> decodeOrThrow(body: String, deserializer: DeserializationStrategy<T>): T =
+        decode(body, deserializer)
+
+    /** Pull the rotated `__atlas_rt` refresh token out of a response's cookies, if any. */
+    internal fun extractRefreshCookie(setCookies: List<String>): String? =
+        extractCookie(Cookie.REFRESH, setCookies)
+
+    /**
+     * Persist a session minted DIRECTLY by a completed attempt (the passkey /
+     * native shape: `jwt` + `created_session_id` in the body, refresh token as a
+     * Set-Cookie), the fallback the flow driver uses when a completion carries no
+     * exchange ticket. Returns the signed-in user.
+     */
+    internal suspend fun persistDirectSession(
+        createdSessionId: String?,
+        response: AtlasResponse,
+    ): AtlasUser {
+        val tokens = decode(response.body, SessionTokens.serializer())
+        val refresh = extractCookie(Cookie.REFRESH, response.setCookies)
+        val sessionId = createdSessionId ?: tokens.resolvedSessionId ?: ""
+        tokenStore.save(AtlasSession(sessionId = sessionId, token = tokens.jwt, refreshToken = refresh))
+        return currentUser()
+    }
+
+    // MARK: - Multi-step flow drivers
+
+    /** A suspend-driven sign-in state machine (password, email/phone code, 2FA, MFA enrollment). */
+    fun signInFlow(): SignInFlow = SignInFlow(this)
+
+    /** A suspend-driven sign-up state machine (create → verify → complete). */
+    fun signUpFlow(): SignUpFlow = SignUpFlow(this)
+
+    /** A suspend-driven password-reset state machine (request → verify → 2FA → set new password). */
+    fun passwordResetFlow(): PasswordResetFlow = PasswordResetFlow(this)
 
     private fun throwIfError(response: RawResponse) {
         if (response.status !in 200..299) {

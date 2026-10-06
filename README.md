@@ -6,9 +6,12 @@ platform — a dependency-light Android library that speaks the Atlas Frontend A
 the Android peer of the [Swift SDK](../swift) and mirrors it endpoint-for-endpoint
 and shape-for-shape, which in turn mirrors the vanilla JS client (`@atlas/js`).
 
-> **Scope.** This is a solid, tested *foundation*: the client-facing auth core a
-> native app needs. It is not yet a complete SDK — see [Scope](#scope) for what a
-> full release still needs (prebuilt UI, the multi-step MFA driver).
+> **Complete.** The full client-facing SDK: the auth core, the native passkey
+> ceremony, a suspend-based multi-step sign-in / sign-up / password-reset flow
+> driver, prebuilt Jetpack Compose components with an observable session, native
+> Google One-Tap (id_token) sign-in, and the organizations / sessions / `/me`
+> surfaces. See [Flows](#multi-step-flow-driver), [Compose](#jetpack-compose-components),
+> [Google](#native-google-sign-in-one-tap--id_token) and [Account](#organizations-sessions--account).
 
 ## Install
 
@@ -17,7 +20,7 @@ Gradle (Kotlin DSL). The library publishes as [`net.atlasauth:atlas-android`](ht
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("net.atlasauth:atlas-android:0.3.0")
+    implementation("net.atlasauth:atlas-android:0.4.0")
 }
 ```
 
@@ -32,7 +35,9 @@ project(":atlas-android").projectDir = file("../ssoly/sdks/kotlin")
 - **min SDK 24**, compile SDK 34.
 - Package: `net.atlasauth.atlas`.
 - Transitive deps: OkHttp, kotlinx-serialization-json, kotlinx-coroutines,
-  androidx.security:security-crypto.
+  androidx.security:security-crypto, androidx.credentials (+ the Google-ID
+  provider), and Jetpack Compose (runtime + Material 3) for the prebuilt UI. The
+  non-UI core has no compile dependency on Compose — the composables are additive.
 
 ## Quick start
 
@@ -243,19 +248,153 @@ Credential Manager sits behind the injectable `PasskeyAuthenticator` seam). The
 `EncryptedSharedPreferences` store is exercised by the instrumented test, since it
 needs the Android Keystore.
 
-## Scope
+The 0.4.0 additions are covered the same way — all offline, no emulator:
+`FlowStepTest` (the status → `FlowStep` mapping), `SignInFlowTest` (each driver
+step's endpoint + body, and that `complete()` persists the session),
+`GoogleSignInTest` (the id_token body + exchange; the device ceremony sits behind
+the `GoogleIdTokenProvider` seam), `AccountTest` (the organizations / sessions /
+`/me` request + response mapping), and `SessionStateTest` (the observable
+`AtlasSessionState` transitions). The **Compose rendering and the live Google
+ceremony are compile-verified and logic-tested here**; on-device behaviour is
+verified in app QA.
 
-A complete native SDK on top of this foundation would add:
+## Multi-step flow driver
 
-- **A multi-step flow driver** mirroring `@atlas/js`'s `nextStep` / `advance` —
-  email-code, second factor, MFA enrollment, password reset — instead of the
-  single password happy-path here.
-- **Prebuilt Compose components** (`<SignIn>` / `<UserButton>` equivalents) and
-  an observable session object for reactive UI.
-- **Sign in with Google One-Tap** native token exchange
-  (`POST /v1/client/sign_ins/id_token`).
-- Organizations, session listing, and the `/me` mutation surface (email,
-  external accounts, metadata).
+New in **0.4.0**. The single-call `signIn(email, password)` above is the happy
+path; the flow driver handles everything else — email/phone codes, a second
+factor (TOTP / SMS / backup code), mid-sign-in MFA enrollment, sign-up, and
+password reset. It is the Kotlin peer of `@atlas/js`'s `nextStep` contract: the
+driver reads the server's `status` and tells you the next [`FlowStep`](src/main/kotlin/net/atlasauth/atlas/Flows.kt);
+**it never picks the step itself** (§5), and an unknown status maps to
+`FlowStep.Unknown` rather than a blank screen.
+
+Each action is a `suspend` function returning the next step; loop until
+`FlowStep.Done`, then `complete()` to persist the session (via the same
+`TokenStore` — ticket exchange, or the direct-session handling the passkey flow
+uses).
+
+```kotlin
+val flow = atlas.signInFlow()
+
+var step = flow.create("ada@example.com")   // → CollectFirstFactor(strategies)
+step = flow.attemptPassword("…")            // → CollectSecondFactor | Done | …
+
+when (step) {
+    is FlowStep.CollectSecondFactor -> {
+        step = flow.attemptSecondFactor(code = "123456", rememberDevice = true)
+    }
+    is FlowStep.EnrollSecondFactor -> {           // §11.1 MFA policy "required"
+        val enrollment = flow.prepareMfaEnrollment()   // show secret / QR (uri)
+        step = flow.attemptMfaEnrollment(enrollment.factorId, listOf("123456"))
+        flow.attempt?.backupCodes                 // shown once on completion
+    }
+    else -> { /* CollectEmailCode, Unknown, … */ }
+}
+
+if (step is FlowStep.Done) {
+    val user = flow.complete()                 // session persisted to the TokenStore
+}
+```
+
+Passwordless first factor: `flow.prepareEmailCode()` / `flow.attemptEmailCode(code)`
+(or `preparePhoneCode(channel)` / `attemptPhoneCode(code)`). SMS / push second
+factor: `flow.prepareSecondFactor("sms" | "push")` returns a
+[`SecondFactorChallenge`](src/main/kotlin/net/atlasauth/atlas/Flows.kt).
+
+**Sign-up** and **password reset** are the same shape:
+
+```kotlin
+val signUp = atlas.signUpFlow()
+signUp.create(email = "…", password = "…")
+signUp.prepareVerification()
+signUp.attemptVerification(code = "123456")
+val user = signUp.complete()
+
+val reset = atlas.passwordResetFlow()
+reset.request(email = "…")
+reset.attemptVerification(code = "123456")
+reset.attemptSecondFactor(code = "…")          // only if the account has MFA
+reset.setNewPassword("…")
+if (reset.canComplete) reset.complete()        // when sign-in-after-reset is on
+```
+
+## Jetpack Compose components
+
+New in **0.4.0**. Drop-in UI backed by the flow driver, the native peers of
+`@atlas/js`'s `<SignIn>` / `<UserButton>`, plus an observable
+[`AtlasSessionState`](src/main/kotlin/net/atlasauth/atlas/Session.kt) exposing a
+`StateFlow<AtlasSessionStatus>` for reactive UI. They render Material 3 defaults;
+pass a `Modifier` to place and size them.
+
+```kotlin
+@Composable
+fun AuthGate(atlas: AtlasClient) {
+    val session = rememberAtlasSessionState(atlas)
+    when (val s = session.status.collectAsState().value) {
+        is AtlasSessionStatus.SignedIn -> {
+            AtlasUserButton(session)             // name + "Sign out"
+            Home(s.user)
+        }
+        AtlasSessionStatus.SignedOut -> AtlasSignIn(atlas, onSignedIn = { session.refresh() })
+        AtlasSessionStatus.Loading -> CircularProgressIndicator()
+    }
+}
+```
+
+`AtlasSessionState` is plain, non-Compose logic (so it is unit-tested without a
+device): `reload()` re-reads the session, a 401/403 flips it to signed-out, and a
+transport blip leaves the last known status untouched — a flaky network is not a
+sign-out.
+
+## Native Google sign-in (One-Tap / id_token)
+
+New in **0.4.0**. Instead of a browser redirect, obtain a Google `id_token`
+on-device via the Jetpack Credential Manager and exchange it for an Atlas session
+at `POST /v1/client/sign_ins/id_token`, bound to a single-use server nonce.
+
+```kotlin
+val google = GoogleSignInManager.create(context, atlas)
+
+lifecycleScope.launch {
+    // Mints a nonce, runs the Credential Manager Google-ID ceremony, exchanges
+    // the id_token. serverClientId is your Google WEB/server OAuth client id.
+    val user = google.signIn(activity = this@MyActivity, serverClientId = "….apps.googleusercontent.com")
+}
+```
+
+The HTTP half is also available directly for a custom ceremony:
+`atlas.mintIdTokenNonce("google")` then `atlas.signInWithIdToken("google", idToken, nonce)`.
+The device ceremony sits behind the injectable `GoogleIdTokenProvider` seam, so
+the exchange is unit-tested without a device. A sign-in that still owes a second
+factor surfaces as `AtlasException.Api` `sign_in_not_complete` — resume it with
+the flow driver.
+
+## Organizations, sessions & account
+
+New in **0.4.0**. Typed `suspend` methods over the organizations, device-session
+and `/me`-mutation surfaces. All go through the one request path (publishable key
++ the stored session), like `currentUser()`.
+
+```kotlin
+// Organizations
+val memberships: List<OrganizationMembership> = atlas.listOrganizationMemberships()
+val org = atlas.createOrganization(name = "Acme", slug = "acme")  // if the instance allows it
+
+// Device sessions (§10.2)
+val devices: List<DeviceSession> = atlas.listSessions()           // `current` marks this device
+atlas.revokeSession(id = "sess_…")                                // sign out one device
+val revoked: Int = atlas.revokeOtherSessions()                    // every OTHER device
+
+// /me mutations
+atlas.updateProfile(firstName = "Ada", unsafeMetadata = mapOf("theme" to JsonValue.Str("dark")))
+atlas.addEmailAddress("ada@new.com")                              // then verifyEmailAddress(id, code)
+atlas.setPrimaryEmailAddress(id = "email_…")
+atlas.connectExternalAccount(provider = "github", redirectUrl = "myapp://cb")  // → authorizationUrl
+atlas.changePassword(currentPassword = "…", newPassword = "…")    // or setPassword("…") for an OAuth-only account
+```
+
+Only `unsafe_metadata` is writable from a client (§4.1); `public_metadata` /
+`private_metadata` are backend-only and the server refuses them.
 
 ## License
 
