@@ -24,6 +24,16 @@ android {
         }
     }
 
+    buildFeatures {
+        // Prebuilt Jetpack Compose components (SignIn / UserButton).
+        compose = true
+    }
+
+    composeOptions {
+        // Compose compiler matched to Kotlin 1.9.24.
+        kotlinCompilerExtensionVersion = libs.versions.composeCompiler.get()
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
@@ -50,9 +60,23 @@ dependencies {
 
     // Native passkeys / WebAuthn via the Jetpack Credential Manager. The
     // play-services-auth provider backs passkeys with Google Password Manager on
-    // devices that ship it.
+    // devices that ship it, and the Credential Manager Google-ID provider backs
+    // the native "Sign in with Google" / One-Tap id_token flow.
     api(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services.auth)
+    api(libs.googleid)
+
+    // Prebuilt Jetpack Compose UI + observable session holder. `api` for the
+    // runtime (the public composables + StateFlow are part of the surface); the UI
+    // libraries are implementation details of those composables. The non-UI core
+    // (AtlasClient, flows, account surface) has no compile dependency on Compose.
+    val composeBom = platform(libs.androidx.compose.bom)
+    api(composeBom)
+    api(libs.androidx.compose.runtime)
+    // `ui` is `api`: `Modifier` appears in the public composables' signatures.
+    api(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.material3)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
@@ -67,7 +91,7 @@ dependencies {
 // native passkey ceremony via the Jetpack Credential Manager). The dependency-light
 // pure-Kotlin/JVM SDK publishes separately as net.atlasauth:atlas-kotlin (sdks/android).
 group = "net.atlasauth"
-version = "0.3.0"
+version = "0.4.0"
 
 mavenPublishing {
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
@@ -81,7 +105,7 @@ mavenPublishing {
             publishJavadocJar = true,
         ),
     )
-    coordinates("net.atlasauth", "atlas-android", "0.3.0")
+    coordinates("net.atlasauth", "atlas-android", "0.4.0")
     pom {
         name.set("Atlas Android SDK")
         description.set(

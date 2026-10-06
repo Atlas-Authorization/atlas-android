@@ -77,9 +77,12 @@ data class AtlasUser(
 @Serializable
 data class EmailAddress(
     val id: String,
-    @SerialName("email_address") val emailAddress: String,
-    val verified: Boolean,
-    val primary: Boolean,
+    @SerialName("email_address") val emailAddress: String? = null,
+    // Defaulted: the mutation responses (verify / set-primary) return only the
+    // fields they changed, so `verified`/`primary` are absent-as-false there while
+    // the full `/me` shape sets them explicitly.
+    val verified: Boolean = false,
+    val primary: Boolean = false,
 )
 
 @Serializable
