@@ -2,6 +2,17 @@
 
 `net.atlasauth:atlas-kotlin` — the pure-JVM Kotlin SDK (source in `sdks/android`).
 
+## 0.7.0 — 2026-10-24
+
+### Added
+
+- **Upstream logout on sign-out.** `signOut(returnUrl, followLogoutUrl)` now returns a `SignOutResult` with the upstream OIDC `upstreamLogoutUrl` and the SAML `samlLogoutUrl` (https only); with `followLogoutUrl` it is passed to `AtlasClient.logoutUrlOpener` (set it to open the system browser). `returnUrl` must be on an allowed origin.
+- **Device sign-in approval.** `lookupDeviceAuthorization(userCode)`, `approveDeviceAuthorization`, `denyDeviceAuthorization` (`DeviceAuthorization`); `formatUserCode`, `userCodeFromUrl`. A refusal needing a fresh re-authentication carries code `STEP_UP_REQUIRED`.
+
+### Changed
+
+- `signOut()` returns `SignOutResult` instead of `Unit` (existing calls compile unchanged).
+
 ## 0.6.0 — 2026-10-23
 
 ### Added

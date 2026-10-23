@@ -39,6 +39,15 @@ class AtlasClient(
      */
     var deviceIdProvider: () -> String? = { DeviceId.forProcess() }
 
+    /**
+     * Opens the upstream logout URL [signOut] hands back — the upstream OIDC
+     * provider's end-session URL, or the SAML Single Logout start URL — in the
+     * system browser, so the user is signed out there too. Null (the default)
+     * only returns it in the [SignOutResult]; on Android set it to start an
+     * `ACTION_VIEW` intent.
+     */
+    var logoutUrlOpener: ((String) -> Unit)? = null
+
     private object Cookie {
         const val SESSION = "__session"
         const val REFRESH = "__atlas_rt"
@@ -162,18 +171,70 @@ class AtlasClient(
      * Sign out: revoke server-side (`POST /v1/client/sessions/:id/revoke`) and
      * clear local storage. Local state is cleared even if the network call fails
      * — a token kept after "sign out" is the worse failure.
+     *
+     * When the session came from an upstream OIDC provider set to RP-initiated
+     * logout, or a SAML connection with Single Logout, the result carries the
+     * URL that signs the user out there too (https only); with [followLogoutUrl]
+     * it is handed to [logoutUrlOpener]. [returnUrl] (an allowed origin) is
+     * where the upstream sends the browser back.
      */
-    suspend fun signOut() {
+    @JvmOverloads
+    suspend fun signOut(returnUrl: String? = null, followLogoutUrl: Boolean = true): SignOutResult {
         val stored = tokenStore.load()
+        var result = SignOutResult()
         try {
             if (stored != null) {
                 runCatching {
-                    send("POST", "/v1/client/sessions/${stored.sessionId}/revoke", body = null, cookie = cookieHeader(stored))
+                    val body = returnUrl?.let { encodeJsonObject(mapOf("return_url" to it, "redirect_url" to it)) }
+                    val response = send("POST", "/v1/client/sessions/${stored.sessionId}/revoke", body = body, cookie = cookieHeader(stored))
+                    if (response.status in 200..299) result = SignOutResult.from(response.body)
                 }
             }
         } finally {
             tokenStore.clear()
         }
+        val url = result.logoutUrl
+        if (followLogoutUrl && url != null) logoutUrlOpener?.invoke(url)
+        return result
+    }
+
+    // ---- device sign-in approval (RFC 8628) -----------------------------------
+
+    /**
+     * Look up a pending device sign-in by the code a TV, watch or CLI shows
+     * (`POST /v1/client/me/device_authorizations/lookup`). Show the client and
+     * scopes, then [approveDeviceAuthorization] or [denyDeviceAuthorization].
+     */
+    suspend fun lookupDeviceAuthorization(userCode: String): DeviceAuthorization =
+        DeviceAuthorization.from(
+            authedRequest(
+                "POST",
+                "/v1/client/me/device_authorizations/lookup",
+                encodeJsonObject(mapOf("user_code" to formatUserCode(userCode))),
+            ),
+        )
+
+    /**
+     * Approve the device sign-in for the signed-in user; the device's next poll
+     * receives its tokens. A stale session is refused with `STEP_UP_REQUIRED`
+     * when the application requires a recent re-authentication.
+     */
+    suspend fun approveDeviceAuthorization(authorization: DeviceAuthorization): DeviceAuthorization =
+        decideDeviceAuthorization(authorization, "approve")
+
+    /** Deny the device sign-in; the device's next poll is told `access_denied`. */
+    suspend fun denyDeviceAuthorization(authorization: DeviceAuthorization): DeviceAuthorization =
+        decideDeviceAuthorization(authorization, "deny")
+
+    private suspend fun decideDeviceAuthorization(authorization: DeviceAuthorization, decision: String): DeviceAuthorization {
+        val id = java.net.URLEncoder.encode(authorization.id, "UTF-8")
+        return DeviceAuthorization.from(
+            authedRequest(
+                "POST",
+                "/v1/client/me/device_authorizations/$id/$decision",
+                encodeJsonObject(mapOf("user_code" to authorization.userCode)),
+            ),
+        )
     }
 
     /** Whether a session is persisted — a cheap offline check, not a server validation. */

@@ -370,3 +370,90 @@ data class AtlasSession(
     val token: String,
     val refreshToken: String?,
 )
+
+/**
+ * What a sign-out hands back for signing out of the upstream identity provider
+ * too: the upstream OIDC end-session URL and the SAML Single Logout start URL
+ * (`https` only). Open [logoutUrl] in the system browser.
+ */
+data class SignOutResult(
+    val upstreamLogoutUrl: String? = null,
+    val samlLogoutUrl: String? = null,
+) {
+    /** The URL to open: the SAML one, else the upstream OIDC one. */
+    val logoutUrl: String? get() = samlLogoutUrl ?: upstreamLogoutUrl
+
+    companion object {
+        internal fun from(body: String): SignOutResult {
+            val json = runCatching { JsonValue.parse(body) }.getOrNull() ?: return SignOutResult()
+            val root = json.obj("response") ?: json
+            fun https(key: String) = (root.string(key) ?: json.string(key))?.takeIf { it.startsWith("https://") }
+            return SignOutResult(https("upstream_logout_url"), https("saml_logout_url"))
+        }
+    }
+}
+
+/** One requested scope of a [DeviceAuthorization], with a human description. */
+data class DeviceAuthorizationScope(val scope: String, val description: String)
+
+/**
+ * A pending device sign-in (OAuth 2.0 Device Authorization Grant): the code a TV,
+ * watch or CLI shows, which the signed-in user approves from this app.
+ * [clientName] is the device app's name; [requiresStepUp] means approving needs
+ * a recent re-authentication.
+ */
+data class DeviceAuthorization(
+    val id: String,
+    val userCode: String,
+    val status: String,
+    val clientId: String?,
+    val clientName: String?,
+    val clientLogoUrl: String?,
+    val firstParty: Boolean,
+    val scopes: List<DeviceAuthorizationScope>,
+    val audience: String?,
+    val requiresStepUp: Boolean,
+    val createdAt: Long?,
+    val expiresAt: Long?,
+) {
+    companion object {
+        fun from(json: JsonValue): DeviceAuthorization {
+            val client = json.obj("client")
+            return DeviceAuthorization(
+                id = json.string("id") ?: throw AtlasException(AtlasError.Decoding("Device authorization has no id.")),
+                userCode = json.string("user_code") ?: "",
+                status = json.string("status") ?: "pending",
+                clientId = client?.string("client_id"),
+                clientName = client?.string("name"),
+                clientLogoUrl = client?.string("logo_url"),
+                firstParty = client?.bool("first_party") ?: false,
+                scopes = json.arr("scopes")?.items.orEmpty().map {
+                    DeviceAuthorizationScope(it.string("scope") ?: "", it.string("description") ?: "")
+                },
+                audience = json.string("audience"),
+                requiresStepUp = json.bool("requires_step_up") ?: false,
+                createdAt = json.long("created_at"),
+                expiresAt = json.long("expires_at"),
+            )
+        }
+    }
+}
+
+/**
+ * Normalise what a person typed into the `XXXX-XXXX` form devices show:
+ * uppercase, spaces and dashes ignored. Returns the trimmed input unchanged when
+ * it is not 8 letters or digits.
+ */
+fun formatUserCode(input: String): String {
+    val cleaned = input.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' }
+    return if (cleaned.length == 8) "${cleaned.take(4)}-${cleaned.drop(4)}" else input.trim()
+}
+
+/** The `user_code` of a verification URL a device displayed (`?user_code=`), formatted; null when none. */
+fun userCodeFromUrl(url: String): String? {
+    val query = url.substringAfter("://", "").substringAfter('?', "").substringBefore('#')
+    if (query.isEmpty()) return null
+    val raw = query.split('&').firstOrNull { it.startsWith("user_code=") }?.substringAfter('=') ?: return null
+    val value = java.net.URLDecoder.decode(raw, "UTF-8")
+    return if (value.isEmpty()) null else formatUserCode(value)
+}
