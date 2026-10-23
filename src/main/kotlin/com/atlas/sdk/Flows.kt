@@ -169,6 +169,30 @@ class SignInFlow internal constructor(
     )
 
     /**
+     * Begin mid-sign-in SMS enrollment: the server registers [phone] (E.164) and
+     * texts it a code; confirm with [attemptSmsMfaEnrollment]. Offered only where
+     * the instance has the SMS factor on and can text.
+     */
+    suspend fun prepareSmsMfaEnrollment(phone: String): MfaEnrollment = MfaEnrollment.from(
+        client.clientRequest(
+            "POST",
+            "/v1/client/sign_ins/${attempt.id}/prepare_mfa_enrollment",
+            jsonBody("strategy" to jstr("phone_code"), "phone" to jstr(phone)),
+        ),
+    )
+
+    /** Confirm an SMS enrollment with the texted [code]. Returns the one-time backup codes. */
+    suspend fun attemptSmsMfaEnrollment(factorId: String, code: String): List<String> {
+        val json = client.clientRequest(
+            "POST",
+            "/v1/client/sign_ins/${attempt.id}/attempt_mfa_enrollment",
+            jsonBody("factor_id" to jstr(factorId), "code" to jstr(code)),
+        )
+        attempt = SignInAttempt.from(json)
+        return json.arr("backup_codes")?.items?.mapNotNull { (it as? JsonValue.Str)?.value } ?: emptyList()
+    }
+
+    /**
      * Confirm MFA enrollment with the authenticator [codes] for [factorId].
      * Returns the one-time backup codes (shown once) and advances the attempt —
      * inspect [step] / [isComplete] afterwards.

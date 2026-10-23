@@ -33,6 +33,12 @@ class AtlasClient(
 ) {
     val baseUrl: String = resolveBaseUrl(frontendApi)
 
+    /**
+     * Supplies the stable device id sent on account-creating starts (see
+     * [DeviceId]). Defaults to an id stable for the process; return null to send none.
+     */
+    var deviceIdProvider: () -> String? = { DeviceId.forProcess() }
+
     private object Cookie {
         const val SESSION = "__session"
         const val REFRESH = "__atlas_rt"
@@ -320,6 +326,29 @@ class AtlasClient(
     suspend fun organization(id: String): Organization =
         Organization.from(authedRequest("GET", "/v1/client/organizations/$id", null))
 
+    /**
+     * One page of an organization's audit trail
+     * (`GET /v1/client/organizations/:id/audit_logs`), newest first. Needs the
+     * `org:sys_memberships:manage` permission (organization admins). [action]
+     * filters exactly, or by prefix when it ends in a dot (`member.`); page on
+     * with [OrganizationAuditLogPage.nextCursor] as [startingAfter].
+     */
+    suspend fun organizationAuditLog(
+        organizationId: String,
+        limit: Int? = null,
+        startingAfter: String? = null,
+        action: String? = null,
+    ): OrganizationAuditLogPage {
+        val enc = { v: String -> java.net.URLEncoder.encode(v, "UTF-8").replace("+", "%20") }
+        val query = listOfNotNull(
+            limit?.let { "limit=$it" },
+            startingAfter?.let { "starting_after=${enc(it)}" },
+            action?.let { "action=${enc(it)}" },
+        ).joinToString("&")
+        val path = "/v1/client/organizations/${enc(organizationId)}/audit_logs" + if (query.isEmpty()) "" else "?$query"
+        return OrganizationAuditLogPage.from(authedRequest("GET", path, null))
+    }
+
     // ---- sessions / devices ---------------------------------------------------
 
     /**
@@ -506,8 +535,9 @@ class AtlasClient(
         val headers = LinkedHashMap<String, String>()
         headers["x-publishable-key"] = publishableKey
         if (cookie != null) headers["Cookie"] = cookie
-        if (body != null) headers["content-type"] = "application/json"
-        transport.execute(HttpRequest(method, baseUrl + path, headers, body))
+        val stamped = DeviceId.stamp(method, path, body, deviceIdProvider)
+        if (stamped != null) headers["content-type"] = "application/json"
+        transport.execute(HttpRequest(method, baseUrl + path, headers, stamped))
     }
 
     private fun throwIfError(response: HttpResponse) {

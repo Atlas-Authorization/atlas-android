@@ -46,6 +46,13 @@ sealed class AtlasError {
     val isEmailDeliveryNotConfigured: Boolean
         get() = knownCode == AtlasErrorCode.EMAIL_DELIVERY_NOT_CONFIGURED
 
+    /**
+     * The step needs a captcha (`CAPTCHA_REQUIRED`) or the one sent was refused
+     * (`CAPTCHA_FAILED`): run the captcha and retry with its token.
+     */
+    val isCaptchaRequired: Boolean
+        get() = knownCode == AtlasErrorCode.CAPTCHA_REQUIRED || knownCode == AtlasErrorCode.CAPTCHA_FAILED
+
     /** A human-readable message, always non-null so it can go straight to UI. */
     val message: String
         get() = when (this) {
@@ -105,6 +112,15 @@ enum class AtlasErrorCode(val wire: String) {
     PASSWORD_BREACHED("PASSWORD_BREACHED"),
     PASSWORD_POLICY("PASSWORD_POLICY"),
     LOCKED("LOCKED"),
+
+    /** 400 — the instance challenges this step and no `captcha_token` was sent. */
+    CAPTCHA_REQUIRED("CAPTCHA_REQUIRED"),
+
+    /** 400 — the `captcha_token` sent was refused. */
+    CAPTCHA_FAILED("CAPTCHA_FAILED"),
+
+    /** 403 — the step needs a challenge but no captcha provider is configured. */
+    CHALLENGE_UNAVAILABLE("CHALLENGE_UNAVAILABLE"),
     ;
 
     companion object {

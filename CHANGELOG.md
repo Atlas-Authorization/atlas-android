@@ -2,6 +2,15 @@
 
 `net.atlasauth:atlas-kotlin` — the pure-JVM Kotlin SDK (source in `sdks/android`).
 
+## 0.6.0 — 2026-10-23
+
+### Added
+
+- **Device id on account-creating starts.** Email sign-up and the social / id_token sign-in starts carry a random `device_id` (`DeviceId`) for the instance's accounts-per-device abuse limit, like the JS SDK. `AtlasClient.deviceIdProvider` defaults to an id stable for the process; supply your own persistent one to keep it across launches.
+- **Captcha refusals typed.** `AtlasErrorCode.CAPTCHA_REQUIRED` / `CAPTCHA_FAILED` / `CHALLENGE_UNAVAILABLE` and `AtlasError.isCaptchaRequired`.
+- **SMS MFA enrolment mid-sign-in.** `SignInFlow.prepareSmsMfaEnrollment(phone)` and `attemptSmsMfaEnrollment(factorId, code)`. `MfaEnrollment` carries `strategy`, `phone`, and for TOTP the QR image `qrCode` (a `data:image/...` URL) with `qrImageBytes`.
+- **Organization audit log.** `AtlasClient.organizationAuditLog(organizationId, limit, startingAfter, action)` (`GET /v1/client/organizations/:id/audit_logs`, organization admins).
+
 ## 0.5.0
 
 ### Added

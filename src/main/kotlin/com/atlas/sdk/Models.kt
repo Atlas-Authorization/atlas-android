@@ -114,14 +114,84 @@ data class SecondFactorChallenge(
  */
 data class MfaEnrollment(
     val factorId: String,
+    /** totp: the setup key (shown once); empty for a texted factor. */
     val secret: String,
+    /** totp: the `otpauth://` provisioning URI. */
     val uri: String,
+    /** `totp` or `phone_code`. */
+    val strategy: String = "totp",
+    /** totp: the URI as a QR image, a `data:image/...` URL (null otherwise). */
+    val qrCode: String? = null,
+    /** phone_code: the (masked) number the code was texted to. */
+    val phone: String? = null,
+) {
+    /** The QR image bytes decoded from [qrCode], if any. */
+    val qrImageBytes: ByteArray?
+        get() = qrCode?.substringAfter(',', "")?.takeIf { it.isNotEmpty() }?.let {
+            runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull()
+        }
+
+    companion object {
+        fun from(json: JsonValue): MfaEnrollment {
+            val strategy = json.string("strategy") ?: "totp"
+            return MfaEnrollment(
+                factorId = json.string("factor_id") ?: throw AtlasException(AtlasError.Decoding("No factor_id.")),
+                secret = json.string("secret")
+                    ?: if (strategy == "totp") throw AtlasException(AtlasError.Decoding("No secret.")) else "",
+                uri = json.string("uri") ?: "",
+                strategy = strategy,
+                // Only an image URL a view can render safely.
+                qrCode = json.string("qr_code")?.takeIf { it.startsWith("data:image/") },
+                phone = json.string("phone"),
+            )
+        }
+    }
+}
+
+/** Who acted, or what was acted on, in an organization audit entry. */
+data class AuditParty(val type: String?, val id: String?) {
+    companion object {
+        fun from(json: JsonValue?): AuditParty = AuditParty(json?.string("type"), json?.string("id"))
+    }
+}
+
+/** One entry of an organization's audit trail. */
+data class OrganizationAuditLogEntry(
+    val id: String,
+    val action: String,
+    val actor: AuditParty,
+    val target: AuditParty,
+    val organizationId: String,
+    val ip: String?,
+    val userAgent: String?,
+    /** Epoch ms. */
+    val createdAt: Long,
 ) {
     companion object {
-        fun from(json: JsonValue): MfaEnrollment = MfaEnrollment(
-            factorId = json.string("factor_id") ?: throw AtlasException(AtlasError.Decoding("No factor_id.")),
-            secret = json.string("secret") ?: throw AtlasException(AtlasError.Decoding("No secret.")),
-            uri = json.string("uri") ?: "",
+        fun from(json: JsonValue): OrganizationAuditLogEntry = OrganizationAuditLogEntry(
+            id = json.string("id") ?: "",
+            action = json.string("action") ?: "",
+            actor = AuditParty.from(json.obj("actor")),
+            target = AuditParty.from(json.obj("target")),
+            organizationId = json.string("organization_id") ?: "",
+            ip = json.string("ip"),
+            userAgent = json.string("user_agent"),
+            createdAt = json.long("created_at") ?: 0,
+        )
+    }
+}
+
+/** One page of an organization's audit trail. */
+data class OrganizationAuditLogPage(
+    val data: List<OrganizationAuditLogEntry>,
+    val hasMore: Boolean,
+    val nextCursor: String?,
+) {
+    companion object {
+        fun from(json: JsonValue): OrganizationAuditLogPage = OrganizationAuditLogPage(
+            data = json.arr("data")?.items?.map { OrganizationAuditLogEntry.from(it) } ?: emptyList(),
+            hasMore = json.bool("has_more") ?: false,
+            nextCursor = json.string("next_cursor"),
         )
     }
 }
