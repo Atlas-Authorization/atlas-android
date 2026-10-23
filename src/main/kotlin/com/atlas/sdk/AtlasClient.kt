@@ -266,6 +266,10 @@ class AtlasClient(
      * Begin a multi-step sign-up (§5.1). Creates the attempt with an email +
      * password and returns a [SignUpFlow]; verify the email with a code, then
      * [SignUpFlow.complete] to persist the session.
+     *
+     * [policyAcceptances] carries the policies the user accepted
+     * ([PolicyAcceptanceController.build]); an instance with required policies
+     * answers 422 `POLICY_ACCEPTANCE_REQUIRED` without them.
      */
     suspend fun beginSignUp(
         email: String,
@@ -274,6 +278,7 @@ class AtlasClient(
         captchaToken: String? = null,
         consent: Boolean? = null,
         organizationId: String? = null,
+        policyAcceptances: List<PolicyAcceptance>? = null,
     ): SignUpFlow {
         val fieldsJson = fields?.let { JsonValue.Obj(it.mapValues { (_, v) -> JsonValue.Str(v) }) }
         val attempt = SignUpAttempt.from(
@@ -287,6 +292,7 @@ class AtlasClient(
                     "consent" to jbool(consent),
                     "organization_id" to jstr(organizationId),
                     "fields" to fieldsJson,
+                    "policy_acceptances" to policyAcceptancesJson(policyAcceptances),
                 ),
             ),
         )

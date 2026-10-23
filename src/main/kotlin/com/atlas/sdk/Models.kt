@@ -17,6 +17,10 @@ data class SignInAttempt(
     val createdSessionId: String?,
     /** Present for exactly the step that reached `complete`; exchanged then gone. */
     val ticket: String?,
+    /** While the attempt is held at `needs_policy_acceptance`: the policies still to accept (raw wire objects). */
+    val pendingPolicies: List<JsonValue> = emptyList(),
+    /** The one-time proof that goes with `accept_policies`; returned once, with the held status. */
+    val policyAcceptanceToken: String? = null,
 ) {
     val isComplete: Boolean get() = status == "complete"
 
@@ -30,6 +34,8 @@ data class SignInAttempt(
             authorizationUrl = json.string("authorization_url"),
             createdSessionId = json.string("created_session_id"),
             ticket = json.string("ticket"),
+            pendingPolicies = json.arr("pending_policies")?.items ?: emptyList(),
+            policyAcceptanceToken = json.string("policy_acceptance_token"),
         )
     }
 }

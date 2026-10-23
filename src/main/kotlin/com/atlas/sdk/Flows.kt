@@ -38,6 +38,14 @@ sealed interface SignInStep {
     /** A CAPTCHA challenge must be solved before the attempt can proceed (§15.4). */
     data object CollectCaptcha : SignInStep
 
+    /**
+     * The server holds the attempt until the user accepts [policies] (terms,
+     * privacy, a newer version of either). Show them (a [PolicyAcceptanceController]
+     * from [AtlasClient.policyController] fills in their content) and send the
+     * result with [SignInFlow.acceptPolicies].
+     */
+    data class AcceptPolicies(val policies: List<AtlasPolicy>) : SignInStep
+
     /** An OAuth redirect is in flight; resume via the ticket on the callback. */
     data object AwaitOAuth : SignInStep
 
@@ -62,6 +70,7 @@ fun nextStep(attempt: SignInAttempt): SignInStep = when (attempt.status) {
     "needs_mfa_enrollment" -> SignInStep.EnrollSecondFactor
     "needs_email_verification" -> SignInStep.CollectEmailCode
     "needs_captcha" -> SignInStep.CollectCaptcha
+    "needs_policy_acceptance" -> SignInStep.AcceptPolicies(pendingPoliciesOf(attempt))
     "needs_oauth_callback" -> SignInStep.AwaitOAuth
     "needs_new_password" -> SignInStep.CollectNewPassword
     "complete" -> SignInStep.Done(attempt.createdSessionId)
@@ -95,6 +104,25 @@ class SignInFlow internal constructor(
 
     /** Whether the attempt has reached `complete`. */
     val isComplete: Boolean get() = attempt.isComplete
+
+    /**
+     * Continue an attempt the server holds at `needs_policy_acceptance`
+     * (`POST /v1/client/sign_ins/:id/accept_policies`). Send what
+     * [PolicyAcceptanceController.build] made; the proof is the attempt's one-time
+     * policy token. Returns the next step: usually [SignInStep.Done] (call
+     * [complete]), or [SignInStep.AcceptPolicies] again when a newer version was
+     * published meanwhile.
+     */
+    suspend fun acceptPolicies(acceptances: List<PolicyAcceptance>): SignInStep {
+        attempt = SignInAttempt.from(
+            client.clientRequest(
+                "POST",
+                "/v1/client/sign_ins/${attempt.id}/accept_policies",
+                acceptPoliciesBody(acceptances, attempt.policyAcceptanceToken),
+            ),
+        )
+        return step
+    }
 
     /** Attempt a `password` first factor. */
     suspend fun attemptPassword(password: String): SignInStep = advanceFirstFactor(
@@ -315,6 +343,9 @@ sealed interface PasswordResetStep {
     /** The new password is owed. */
     data object CollectNewPassword : PasswordResetStep
 
+    /** The server holds the sign-in that follows the reset until [policies] are accepted ([PasswordResetFlow.acceptPolicies]). */
+    data class AcceptPolicies(val policies: List<AtlasPolicy>) : PasswordResetStep
+
     /** The reset completed; [PasswordResetFlow.complete] signs the user in when enabled. */
     data class Done(val sessionId: String?) : PasswordResetStep
 
@@ -341,6 +372,7 @@ class PasswordResetFlow internal constructor(
         "needs_email_verification" -> PasswordResetStep.CollectCode
         "needs_second_factor" -> PasswordResetStep.CollectSecondFactor
         "needs_new_password" -> PasswordResetStep.CollectNewPassword
+        "needs_policy_acceptance" -> PasswordResetStep.AcceptPolicies(pendingPoliciesOf(attempt))
         "complete" -> PasswordResetStep.Done(attempt.createdSessionId)
         else -> PasswordResetStep.Unknown(attempt.status)
     }
@@ -382,6 +414,18 @@ class PasswordResetFlow internal constructor(
                 "POST",
                 "/v1/client/password_resets/${attempt.id}/set_new_password",
                 jsonBody("password" to jstr(password)),
+            ),
+        )
+        return step
+    }
+
+    /** Continue a reset held at `needs_policy_acceptance` (see [SignInFlow.acceptPolicies]). */
+    suspend fun acceptPolicies(acceptances: List<PolicyAcceptance>): PasswordResetStep {
+        attempt = SignInAttempt.from(
+            client.clientRequest(
+                "POST",
+                "/v1/client/sign_ins/${attempt.id}/accept_policies",
+                acceptPoliciesBody(acceptances, attempt.policyAcceptanceToken),
             ),
         )
         return step

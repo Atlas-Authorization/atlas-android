@@ -208,6 +208,33 @@ if (e.error.isEmailDeliveryNotConfigured) showBanner(e.error.message)
 // or: e.error.knownCode == AtlasErrorCode.EMAIL_DELIVERY_NOT_CONFIGURED
 ```
 
+## Policy acceptance (terms of service, privacy)
+
+When the app defines policies in the Atlas dashboard, sign-up must carry the user's acceptance and sign-in can be held until a newer version is accepted.
+
+```kotlin
+// Sign-up: load the policies, let the user tick them, send what they accepted.
+val policies = atlas.signUpPolicyController()          // PolicyAcceptanceController
+// draw policies.checkboxPolicies() / scrollPolicies() / linkPolicies() with your UI;
+// policies.setAllChecked(true) when the box is ticked, policies.canSubmit() enables the button
+val flow = atlas.beginSignUp(email, password, policyAcceptances = policies.build())
+```
+
+A `scroll` policy is read to the end first: call `startClock` / `markScrolledToEnd` / `acceptScroll` as the user scrolls (`isPolicyScrolledToEnd(value, max)` helps). If the server answers 422 `POLICY_ACCEPTANCE_REQUIRED`, `atlas.refreshPoliciesOnRequired(controller, error)` reloads what is needed now.
+
+A held sign-in surfaces as a step:
+
+```kotlin
+val step = flow.attemptPassword(password)
+if (step is SignInStep.AcceptPolicies) {
+    val controller = atlas.policyController(flow.attempt)   // fills in the content
+    // ... show it, then:
+    flow.acceptPolicies(controller.build())
+}
+```
+
+A sign-in that returns through a Custom Tab or browser redirect carries the proof in the URL: `AtlasRedirectResult.parse(url)` then `atlas.resumeSignIn(redirect)`. For a signed-in user whose policies changed, `PolicyGate(atlas)` loads the standing (`load()`), builds the controller (`begin()`) and posts the acceptance (`accept(controller)`).
+
 ## Build & test
 
 ```bash
