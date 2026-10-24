@@ -575,6 +575,21 @@ class AtlasClient(
     }
 
     /**
+     * A cookie-less request with extra headers (a bearer token, an `Origin`): the
+     * Sign in with Atlas integration-token route. Throws on a non-2xx.
+     */
+    internal suspend fun headerRequest(
+        method: String,
+        path: String,
+        bodyJson: String?,
+        headers: Map<String, String>,
+    ): JsonValue {
+        val response = send(method, path, bodyJson, cookie = null, extraHeaders = headers)
+        throwIfError(response)
+        return if (response.body.isBlank()) JsonValue.Obj(emptyMap()) else JsonValue.parse(response.body)
+    }
+
+    /**
      * An authenticated `/v1/client/me|organizations|sessions` request: presents
      * the stored session cookie (the same replay [currentUser] uses), throws
      * [AtlasError.NotSignedIn] when there is no session, throws on a non-2xx, and
@@ -598,10 +613,12 @@ class AtlasClient(
         path: String,
         body: String?,
         cookie: String?,
+        extraHeaders: Map<String, String> = emptyMap(),
     ): HttpResponse = withContext(dispatcher) {
         val headers = LinkedHashMap<String, String>()
         headers["x-publishable-key"] = publishableKey
         if (cookie != null) headers["Cookie"] = cookie
+        headers.putAll(extraHeaders)
         val stamped = DeviceId.stamp(method, path, body, deviceIdProvider)
         if (stamped != null) headers["content-type"] = "application/json"
         transport.execute(HttpRequest(method, baseUrl + path, headers, stamped))
