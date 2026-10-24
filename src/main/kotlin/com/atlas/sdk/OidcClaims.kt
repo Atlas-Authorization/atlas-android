@@ -43,6 +43,10 @@ data class OidcClaims(
     val orgPermissions: List<String> = emptyList(),
     val orgs: List<OidcOrganization> = emptyList(),
     val sso: OidcSso? = null,
+    /** `sso_organization_id`: the Atlas organization that owns the SSO connection (independent of `org_id`). */
+    val ssoOrganizationId: String? = null,
+    /** `sso_connection_type`: `saml` or `oidc`; absent on a non-SSO sign-in. */
+    val ssoConnectionType: String? = null,
 ) {
     companion object {
         /** Read the claims off a decoded claims object (userinfo, introspection, or a JWT payload). */
@@ -63,6 +67,8 @@ data class OidcClaims(
                 orgPermissions = permissions,
                 orgs = orgs,
                 sso = sso,
+                ssoOrganizationId = claims.string("sso_organization_id"),
+                ssoConnectionType = claims.string("sso_connection_type"),
             )
         }
 
