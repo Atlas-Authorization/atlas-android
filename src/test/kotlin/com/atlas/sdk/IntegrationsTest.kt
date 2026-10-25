@@ -46,6 +46,15 @@ class IntegrationsTest {
     }
 
     @Test
+    fun getTokenSendsThePerCallAudience() = runBlocking {
+        val t = FakeTransport()
+        t.enqueue(200, """{"jwt":"j","expires_in":60,"integration":"acme","audience":"acme:dv-1"}""")
+        val token = client(t).getToken("acme", cbid = "dv 1", audience = "acme:dv-1", audienceParams = mapOf("tenant" to "t2"))!!
+        assertEquals("acme:dv-1", token.audience)
+        assertTrue(t.recorded[0].url.endsWith("/integration_tokens/acme?tenant=t2&cbid=dv%201&audience=acme%3Adv-1"))
+    }
+
+    @Test
     fun getTokenIsNullWhenTheIntegrationIsNotEnabled() = runBlocking {
         val t = FakeTransport()
         t.enqueue(404, """{"errors":[{"code":"NOT_FOUND","message":"nope"}]}""")
