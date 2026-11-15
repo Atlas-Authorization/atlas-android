@@ -39,8 +39,15 @@ interface HttpTransport {
  */
 class UrlConnectionTransport(private val connectTimeoutMs: Int = 15_000, private val readTimeoutMs: Int = 30_000) : HttpTransport {
     override fun execute(request: HttpRequest): HttpResponse {
-        val connection = (URI(request.url).toURL().openConnection() as HttpURLConnection).apply {
-            requestMethod = request.method
+        val connection = URI(request.url).toURL().openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = request.method
+        } catch (e: java.net.ProtocolException) {
+            // A plain JVM's HttpURLConnection has no PATCH (Android's does); send it through the JDK client instead.
+            if (request.method != "PATCH") throw AtlasException(AtlasError.Transport("We could not reach the server: ${e.message}"))
+            return JdkHttpClientTransport(connectTimeoutMs, readTimeoutMs).execute(request)
+        }
+        connection.apply {
             connectTimeout = connectTimeoutMs
             readTimeout = readTimeoutMs
             instanceFollowRedirects = false
@@ -67,5 +74,30 @@ class UrlConnectionTransport(private val connectTimeoutMs: Int = 15_000, private
         } finally {
             connection.disconnect()
         }
+    }
+}
+
+/**
+ * `java.net.http.HttpClient` (JDK 11+), used only for PATCH on a plain JVM. Kept in its own class so Android,
+ * which has no `java.net.http`, never loads it. No redirects are followed, like [UrlConnectionTransport].
+ */
+internal class JdkHttpClientTransport(private val connectTimeoutMs: Int, private val readTimeoutMs: Int) : HttpTransport {
+    override fun execute(request: HttpRequest): HttpResponse = try {
+        val client = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofMillis(connectTimeoutMs.toLong()))
+            .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+            .build()
+        val body = request.body?.let { java.net.http.HttpRequest.BodyPublishers.ofString(it, Charsets.UTF_8) }
+            ?: java.net.http.HttpRequest.BodyPublishers.noBody()
+        val builder = java.net.http.HttpRequest.newBuilder(URI(request.url))
+            .timeout(java.time.Duration.ofMillis(readTimeoutMs.toLong()))
+            .method(request.method, body)
+        // The JDK client sets these itself and refuses them as request headers.
+        val restricted = setOf("connection", "content-length", "expect", "host", "upgrade")
+        request.headers.forEach { (k, v) -> if (k.lowercase() !in restricted) builder.header(k, v) }
+        val res = client.send(builder.build(), java.net.http.HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
+        HttpResponse(status = res.statusCode(), body = res.body() ?: "", headers = res.headers().map())
+    } catch (e: Exception) {
+        throw AtlasException(AtlasError.Transport("We could not reach the server: ${e.message}"))
     }
 }

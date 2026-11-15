@@ -235,6 +235,32 @@ if (step is SignInStep.AcceptPolicies) {
 
 A sign-in that returns through a Custom Tab or browser redirect carries the proof in the URL: `AtlasRedirectResult.parse(url)` then `atlas.resumeSignIn(redirect)`. For a signed-in user whose policies changed, `PolicyGate(atlas)` loads the standing (`load()`), builds the controller (`begin()`) and posts the acceptance (`accept(controller)`).
 
+## Billing, API keys, active organization and step-up
+
+Suspend extensions on `AtlasClient`, all presenting the stored session:
+
+```kotlin
+// Organizations: switch the active one (the new active org is in the session token)
+client.setActiveOrganization(orgId)            // null = personal account
+val active = client.activeOrganizationId()
+
+// Billing: plans, subscription, hosted Checkout and Billing Portal
+val plans = client.billingPlans()
+val checkoutUrl = client.billingCheckout(plans.first().id, successUrl = back, cancelUrl = back)
+val portalUrl = client.billingPortal(returnUrl = back)
+client.billingCancel(); client.billingRestore()
+
+// API keys: list, create (the secret is returned once), rename, revoke
+val created = client.createApiKey(name = "CI", expiresInSeconds = 86_400)
+println(created.secret)
+client.revokeApiKey(created.key.id)
+
+// Creating a key on a stale session throws STEP_UP_REQUIRED: re-authenticate, then retry
+client.stepUp("password", password = password)
+```
+
+Open the checkout and portal URLs in a Custom Tab; there is no in-app card form. `BillingPlan.priceView` gives the display price with promotion, trial and yearly amount.
+
 ## Build & test
 
 ```bash

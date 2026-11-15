@@ -2,6 +2,19 @@
 
 `net.atlasauth:atlas-kotlin` — the pure-JVM Kotlin SDK (source in `sdks/android`).
 
+## 0.12.0 — 2026-11-14
+
+### Added
+
+- **Billing.** `billingPlans`, `billingSubscription`, `billingInvoices`, `billingPaymentMethod`, `billingCheckout`, `billingPortal`, `billingChangePlan`, `billingCancel`, `billingRestore`, `billingCheck` and `billingValidateCoupon`, with `BillingPlan.priceView` for promotions, trials and yearly prices.
+- **API keys.** `listApiKeys`, `createApiKey`, `renameApiKey` and `revokeApiKey` for the user's keys or an organization's.
+- **Active organization and step-up.** `setActiveOrganization`, `activeOrganizationId` and `stepUp`.
+- **Step-up with a passkey or push.** `stepUpWithPasskey { options -> ... }` (you plug in Credential Manager), `beginPushStepUp()` and `stepUpPush()`.
+
+### Fixed
+
+- PATCH requests (profile and API key updates) failed with a ProtocolException on a plain JVM; the transport now sets the method reflectively as a fallback.
+
 ## 0.11.0 — 2026-10-25
 
 ### Added
