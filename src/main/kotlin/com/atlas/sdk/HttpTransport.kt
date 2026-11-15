@@ -40,7 +40,7 @@ interface HttpTransport {
 class UrlConnectionTransport(private val connectTimeoutMs: Int = 15_000, private val readTimeoutMs: Int = 30_000) : HttpTransport {
     override fun execute(request: HttpRequest): HttpResponse {
         val connection = (URI(request.url).toURL().openConnection() as HttpURLConnection).apply {
-            requestMethod = request.method
+            setMethodWithPatch(request.method)
             connectTimeout = connectTimeoutMs
             readTimeout = readTimeoutMs
             instanceFollowRedirects = false
@@ -67,5 +67,41 @@ class UrlConnectionTransport(private val connectTimeoutMs: Int = 15_000, private
         } finally {
             connection.disconnect()
         }
+    }
+}
+
+/**
+ * `HttpURLConnection` rejects PATCH with a ProtocolException on a plain JVM. Set
+ * the method on the connection (and on the delegate of an `HttpsURLConnectionImpl`)
+ * through the `method` field instead; any other method goes through the setter.
+ */
+internal fun HttpURLConnection.setMethodWithPatch(method: String) {
+    try {
+        requestMethod = method
+    } catch (e: java.net.ProtocolException) {
+        if (method != "PATCH") throw e
+        var c: Class<*>? = javaClass
+        var set = false
+        while (c != null && !set) {
+            try {
+                c.getDeclaredField("method").apply { isAccessible = true }.set(this, method)
+                set = true
+            } catch (_: NoSuchFieldException) {
+                c = c.superclass
+            }
+        }
+        // HttpsURLConnectionImpl keeps the real connection in `delegate`.
+        runCatching {
+            val dField = javaClass.getDeclaredField("delegate").apply { isAccessible = true }
+            val delegate = dField.get(this)
+            if (delegate != null) {
+                var dc: Class<*>? = delegate.javaClass
+                while (dc != null) {
+                    try { dc.getDeclaredField("method").apply { isAccessible = true }.set(delegate, method); break }
+                    catch (_: NoSuchFieldException) { dc = dc.superclass }
+                }
+            }
+        }
+        if (!set) throw e
     }
 }
