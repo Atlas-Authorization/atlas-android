@@ -1,6 +1,6 @@
 # Atlas Kotlin (JVM) SDK
 
-The official **Kotlin / JVM** SDK for the [Atlas](../../) auth platform — a
+The official **Kotlin / JVM** SDK for the [Atlas](https://atlasauth.net) auth platform — a
 dependency-light, pure-JVM library (no Android SDK required) that speaks the
 Atlas Frontend API (FAPI) with `HttpURLConnection` + coroutines. It mirrors the
 vanilla JS client (`@atlas/js`) endpoint-for-endpoint and shape-for-shape.
